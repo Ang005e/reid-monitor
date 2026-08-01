@@ -1,0 +1,11 @@
+{
+  // Type-checking only. The emitted build (tsconfig.json) deliberately excludes
+  // scripts/ so that dist/ mirrors src/ — see the rootDir comment there. This
+  // config exists so scripts/ is still type-checked despite not being built.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+}

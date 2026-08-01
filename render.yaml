@@ -1,0 +1,40 @@
+# Render Blueprint for the reid-monitor backend.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo. Render reads
+# this file and creates the service. Everything below is already correct; the
+# only value you MUST review is CORS_ORIGIN (see the note on it).
+#
+# The frontend is deployed separately on Vercel and is not described here.
+services:
+  - type: web
+    name: reid-monitor-api
+    runtime: node
+    plan: free
+    # The backend is self-contained in server/ and never imports the frontend.
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    # Render polls this to decide the service is up. It is a plain synchronous
+    # handler that cannot throw, so it answers even while the simulator seeds.
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # MUST list the exact frontend origin. EventSource is a cross-origin
+      # request from the Vercel domain, and the server REJECTS "*" when
+      # NODE_ENV=production, so a wrong value here breaks the live stream while
+      # leaving the rest of the page working. No trailing slash.
+      - key: CORS_ORIGIN
+        value: https://reid-monitor.vercel.app
+      # Playback speed: 1 = one simulated hour per 1.5 s. The dataset is 500
+      # hourly rows, so 1x runs ~12.5 minutes before it holds its final state.
+      - key: SIM_SPEED
+        value: "1"
+      # Rows written instantly on a cold boot so the dashboard opens with
+      # history rather than an empty chart.
+      - key: SEED_ROWS
+        value: "275"
+    # NOTE: no persistent disk on the free plan. data/live/ is rebuilt
+    # deterministically from data/source/ on every boot, so history resets on
+    # redeploy and when the free instance wakes from sleep. That is acceptable
+    # for a demo; add a disk and set DATA_DIR to keep history across restarts.

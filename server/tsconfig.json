@@ -6,7 +6,11 @@
     "moduleResolution": "bundler",
     "types": ["node"],
 
-    "rootDir": ".",
+    // rootDir is src/, NOT ".", so the build emits dist/index.js rather than
+    // dist/src/index.js. config.ts derives SERVER_ROOT as one level up from its
+    // own location, which only lands on server/ if the layout is mirrored.
+    // Compiling scripts/ too would push everything down a level and break it.
+    "rootDir": "src",
     "outDir": "dist",
 
     "strict": true,
@@ -22,5 +26,7 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+  // scripts/ is intentionally excluded from the emitted build (it runs via tsx
+  // in development). `npm run typecheck` still covers it — see that script.
+  "include": ["src/**/*.ts"]
 }
