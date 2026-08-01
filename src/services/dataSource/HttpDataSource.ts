@@ -108,14 +108,17 @@ export class HttpDataSource implements DataSource {
       onReading(reading);
     };
 
-    // The simulator replays the dataset on a loop. When it wraps, the server
-    // clears its history and the next reading carries the FIRST timestamp
-    // again. Without this the chart would keep the old run and its time axis
-    // would jump backwards mid-series.
+    // The server sends `reset` when the history we hold no longer belongs to
+    // its timeline: the simulator looped, or the backend restarted (ids begin
+    // at 0 again on boot, since the free tier has no persistent disk).
     //
-    // Note we deliberately do NOT reset `lastId`: ids keep counting up across
-    // loops precisely so the resume cursor and the duplicate guard stay valid.
+    // Clearing `lastId` is essential, not tidy-up. It is the resume cursor AND
+    // it seeds the duplicate fence in useMonitor; a reset means the ids that
+    // follow may be LOWER than the ones we have seen, so a stale cursor would
+    // make us ask for a position the server cannot place and make the fence
+    // discard every row that arrives. That is precisely the freeze this fixes.
     source.addEventListener('reset', () => {
+      this.lastId = null;
       onReset?.();
     });
 

@@ -168,20 +168,25 @@ export function useMonitor() {
         setReadings((prev) => [...prev, reading]);
       },
       (status) => setConnectionStatus(status),
-      // The backend replays the dataset on a loop. On wrap it clears its
-      // history and the next reading carries the dataset's FIRST timestamp
-      // again, so we drop everything we hold — otherwise the charts would keep
-      // the finished run and their time axis would jump backwards mid-series.
+      // The server sends `reset` when what we hold is no longer part of its
+      // timeline: the simulator looped back to the dataset's first timestamp,
+      // or the backend restarted (no persistent disk on the free tier, so ids
+      // begin again at 0). Either way we drop everything — otherwise the charts
+      // keep a finished run and the time axis jumps backwards mid-series.
       //
-      // lastAppendedId is deliberately left alone: ids keep counting up across
-      // a loop, so the duplicate guard stays correct. Clearing it would be
-      // harmless here but wrong if a backfill arrived out of order.
+      // lastAppendedId MUST be cleared with it. Ids climb across a loop but NOT
+      // across a restart, so leaving the fence at a high-water mark from the
+      // previous timeline makes it discard every reading that follows, and the
+      // dashboard sits frozen on its last timestamp until the server's ids
+      // happen to climb past it. Post-reset the server replays from the start
+      // of the current pass, so there is nothing left for the fence to protect.
       //
       // Rule state is cleared too, so an alert that was firing at the end of
       // the previous pass re-fires (and re-notifies) when it recurs in the new
       // one, instead of being suppressed as "already active".
       () => {
         setReadings([]);
+        lastAppendedId.current = null;
         activeRulesRef.current = new Set();
       },
     );

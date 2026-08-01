@@ -64,6 +64,22 @@ export function attachSseClient(
     res.write('event: reset\ndata: {}\n\n');
   });
 
+  // A cursor we cannot place in our current history means the client is holding
+  // rows from a timeline that no longer exists — it outlived this process (ids
+  // restart at 0 on boot), or it was disconnected across a loop and missed the
+  // reset. Serving it as a normal resume is what froze the dashboard: catch-up
+  // returns nothing, and every live row we then push sits below the client's
+  // duplicate fence and is silently discarded.
+  //
+  // So say so explicitly and start it over from the top of the current pass.
+  // The reset frame must be written BEFORE any catch-up, since it is what tells
+  // the client to drop the stale rows these frames are about to replace.
+  let resumeFrom = since;
+  if (resumeFrom !== undefined && !Number.isNaN(resumeFrom) && !store.canResumeFrom(resumeFrom)) {
+    res.write('event: reset\ndata: {}\n\n');
+    resumeFrom = undefined; // replay everything we currently hold
+  }
+
   const liveBuffer: CleanedReading[] = [];
   let streaming = false;
 
@@ -78,7 +94,7 @@ export function attachSseClient(
   });
 
   // Replay history — synchronous, no event-loop yield.
-  const catchUp = store.since(since);
+  const catchUp = store.since(resumeFrom);
   for (const r of catchUp) {
     writeFrame(res, r);
   }
@@ -87,7 +103,7 @@ export function attachSseClient(
   // this mark was already sent; anything above it is genuinely new.
   const lastCatchUpItem = catchUp[catchUp.length - 1];
   const highWaterMark =
-    lastCatchUpItem !== undefined ? lastCatchUpItem.id : (since ?? -1);
+    lastCatchUpItem !== undefined ? lastCatchUpItem.id : (resumeFrom ?? -1);
 
   for (const r of liveBuffer) {
     if (r.id > highWaterMark) {

@@ -58,6 +58,37 @@ export class ReadingStore {
     return this.readings[this.readings.length - 1];
   }
 
+  /** Oldest reading still held. Undefined when history is empty. */
+  get first(): CleanedReading | undefined {
+    return this.readings[0];
+  }
+
+  /**
+   * Can we honour `since` as a resume cursor, or is the client's position
+   * outside the history we currently hold?
+   *
+   * A cursor goes out of range two ways, and both leave the dashboard frozen if
+   * we serve them as an ordinary resume:
+   *
+   *  - `since` is ABOVE our latest id. The client outlived this process. Ids
+   *    restart at 0 on boot (the ephemeral disk means nothing is restored), so
+   *    every live row we push is below the client's duplicate fence and gets
+   *    dropped until our ids climb back past it — minutes of a stuck chart.
+   *  - `since` is BELOW our oldest id. The client was disconnected across a
+   *    loop, so it holds rows from a previous pass and never saw the `reset`
+   *    event. Appending this pass onto those sends its time axis backwards.
+   *
+   * Either way the honest answer is "start over", not "here is the tail".
+   */
+  canResumeFrom(since: number): boolean {
+    const first = this.first;
+    const latest = this.latest;
+    // Empty history: we have no timeline to place the cursor in, and any
+    // non-cold cursor must predate the rows we are about to generate.
+    if (first === undefined || latest === undefined) return false;
+    return since >= first.id - 1 && since <= latest.id;
+  }
+
   /** Returns an unsubscribe function. */
   subscribe(listener: (reading: CleanedReading) => void): () => void {
     this.listeners.add(listener);

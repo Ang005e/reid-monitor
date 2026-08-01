@@ -224,23 +224,45 @@ the base rate is 500 ms per simulated hour — 120 simulated minutes per real
 second — so a full pass takes ~4 min 10 s. Set `SIM_LOOP=0` to stop at the end
 instead, and `SEED_ROWS` above 0 to open mid-dataset.
 
-**You MUST handle the `reset` SSE event.** On each loop the server sends:
+**You MUST handle the `reset` SSE event.** The server sends:
 
 ```
 event: reset
 data: {}
 ```
 
-immediately before the next reading, which carries the dataset's FIRST timestamp
-again. Clear every reading you hold when you see it, or your chart keeps the
-finished run and its time axis jumps backwards mid-series. `EventSource` does not
-route named events to `onmessage` — use `addEventListener('reset', …)`.
+whenever the history you are holding is no longer part of its timeline. Clear
+every reading you hold when you see it, **and clear your resume cursor and any
+duplicate-id guard with it** — see the freeze note below. `EventSource` does not
+route named events to `onmessage`, so use `addEventListener('reset', …)`.
 
-**Reading ids never reset.** They keep counting up across loops (…498, 499, 500
-with the timestamp back at 2026-07-01). This is deliberate: ids are the `?since=`
-resume cursor and the dashboard drops ids it has already seen, so restarting them
-at 0 would make an entire pass look like duplicate data and be discarded silently.
-Timestamps repeat; ids do not.
+It fires in three situations:
+
+1. **Mid-stream, on each loop** — the next reading carries the dataset's FIRST
+   timestamp again, so a chart that kept the finished run would see its time
+   axis jump backwards.
+2. **At connect, when your `?since=` is ABOVE our latest id** — you outlived the
+   process. Ids restart at 0 on boot (free tier, no persistent disk).
+3. **At connect, when your `?since=` is BELOW our oldest id** — you were
+   disconnected across a loop and so never received (1).
+
+In cases 2 and 3 the reset is written before any catch-up frames, and we then
+replay the whole of the current pass rather than a tail.
+
+**Reading ids count up across loops but restart on reboot.** Within one process
+they only ever increase (…498, 499, 500 with the timestamp back at 2026-07-01) —
+deliberately, since ids are the `?since=` cursor and the dashboard drops ids it
+has already seen, so restarting them per pass would make an entire pass look like
+duplicate data. A **restart** is the exception: history is rebuilt from
+`data/source/` and ids begin again at 0.
+
+> **The freeze this caused.** A client that kept a cursor of, say, 594 across a
+> restart got nothing from catch-up (the server had no such id) and then dropped
+> every live row as a duplicate, because they arrived numbered 0, 1, 2 … — below
+> its fence. The dashboard sat on its last timestamp, apparently "live", until
+> the server's ids climbed back past 594 — about five minutes. Cases 2 and 3
+> above exist to make that impossible; clearing your cursor on `reset` is the
+> half of the fix that lives on the client.
 
 **Cold start on Render's free tier takes ~30 s.** First request after an idle
 period will hang while the service wakes. Worth a loading state.
