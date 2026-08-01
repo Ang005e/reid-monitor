@@ -4,6 +4,7 @@ import { channelValue } from '@/lib/spc';
 import { ControlChart } from './ControlChart';
 import { CpkPanel } from './CpkPanel';
 import { InterpretationCard } from './InterpretationCard';
+import { ChatPanel } from './ChatPanel';
 
 /** Raw-data layer: live control charts, capability panel, technical findings. */
 export function EngineerView({ monitor }: { monitor: MonitorState }) {
@@ -53,6 +54,13 @@ export function EngineerView({ monitor }: { monitor: MonitorState }) {
           />
         ))}
       </div>
+
+      {/*
+        Also rendered in CommunityView. Before the login gate existed every user
+        landed on the community view and therefore saw the chat; engineers now
+        open straight into this view, so it lives in both to keep it reachable.
+      */}
+      <ChatPanel monitor={monitor} />
     </div>
   );
 }
