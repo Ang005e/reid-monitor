@@ -117,19 +117,41 @@ export const INTERPOLATION_LIMIT_AREA = 'inside';
  */
 export const PIPELINE_POLL_MS = 250;
 
+/**
+ * Minimum gap between recomputations of the /api/meta summaries.
+ *
+ * They are whole-history scans (percentile sorts per channel, an episode walk
+ * and a rule scorecard) over what is now ~30,000 minute rows. Redoing them on
+ * every 250 ms batch is pure waste: the dashboard polls /meta every few minutes
+ * and the numbers move slowly by construction. End-of-pass flushes bypass this.
+ */
+export const META_REFRESH_MS = 1000;
+
 // ---------------------------------------------------------------------------
 // Simulator
 // ---------------------------------------------------------------------------
 
 /**
- * Real milliseconds per simulated hour at 1x.
+ * Simulated minutes elapsed per real second at 1x.
  *
- * 500 ms = 2 simulated hours per real second = 120 simulated minutes/second.
- * The dataset is 500 hourly rows, so one full pass takes ~4 min 10 s before it
- * loops (see SIM_LOOP). Was 1500 ms, which matched the old frontend replay but
- * took 12.5 min to get through the dataset once.
+ * The feed runs at 1-minute resolution (see simulator/interpolate.ts), so this
+ * is also the row rate: 120 rows per second. The dataset spans 499 hours, which
+ * expands to 29,941 minute rows, so one full pass takes ~4 min 10 s before it
+ * loops (see SIM_LOOP).
  */
-export const BASE_TICK_MS = 500;
+export const SIM_MINUTES_PER_SECOND = 120;
+
+/**
+ * Wall-clock cadence of the simulator's timer.
+ *
+ * Rows are emitted in BATCHES rather than one per timer fire. At 120 rows/s a
+ * row-per-tick design would need an 8.3 ms interval, and setTimeout neither
+ * holds that accurately nor is it free to wake the event loop that often. So the
+ * interval stays fixed and the batch size absorbs the rate: 30 rows every 250 ms
+ * at 1x, 60 at 2x, and so on. Playback speed changes how many rows a tick
+ * carries, never how often it fires.
+ */
+export const SIM_TICK_MS = 250;
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -148,7 +170,8 @@ export const SIM_SPEED = envInt('SIM_SPEED', 1);
  *
  * Defaults to 0: the simulator replays the WHOLE dataset live, from the first
  * row, so nothing is skipped and every incident plays out on screen. Set it
- * above zero only if you want the dashboard to open mid-dataset.
+ * above zero only if you want the dashboard to open mid-dataset — and note the
+ * unit is now MINUTE rows, so an hour of seeded history is 60, not 1.
  */
 export const SEED_ROWS = envInt('SEED_ROWS', 0);
 

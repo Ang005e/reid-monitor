@@ -8,8 +8,8 @@ import type {
   MetaResponse,
   SensorReading,
 } from '@/types';
-import { CHANNELS, ROLLING_WINDOW } from '@/config/channels';
-import { computeChannelStats, stableBaseline } from '@/lib/spc';
+import { CHANNELS, ROLLING_WINDOW_H } from '@/config/channels';
+import { computeChannelStats, samplesPerHour, stableBaseline } from '@/lib/spc';
 import { interpret } from '@/lib/interpret';
 import { createDataSource } from '@/services/dataSource';
 import { alertDispatcher } from '@/services/alerts';
@@ -56,6 +56,16 @@ import { alertDispatcher } from '@/services/alerts';
  * Both are guarded with `?.()` so CsvDataSource (which lacks these methods)
  * continues to work as the demo fallback.
  */
+/**
+ * How often buffered readings are committed to React state.
+ *
+ * 200 ms = 5 UI updates a second. Fast enough that the clock reads as moving
+ * continuously, slow enough that the live feed's 120 readings/second cost five
+ * renders rather than a hundred and twenty. Nothing is dropped — only the number
+ * of times the tree re-renders changes.
+ */
+const READING_FLUSH_MS = 200;
+
 export function useMonitor() {
   const dataSourceRef = useRef(createDataSource());
   const [readings, setReadings] = useState<SensorReading[]>([]);
@@ -99,6 +109,20 @@ export function useMonitor() {
    */
   const lastAppendedId = useRef<number | null>(null);
 
+  // --- Append coalescing ------------------------------------------------------
+
+  /**
+   * Readings received from the stream but not yet committed to React state.
+   *
+   * The live feed runs at 1-minute resolution and 120 readings/second. Calling
+   * setReadings per reading would mean 120 renders a second, each one copying a
+   * history array up to 30,000 long and recomputing every SPC statistic and
+   * every rule — the tab would lock up. Instead readings land here synchronously
+   * (so the id fence and ordering stay exact) and are committed as a batch by
+   * the flush timer below.
+   */
+  const pendingReadings = useRef<SensorReading[]>([]);
+
   // ---------------------------------------------------------------------------
   // History fetch
   // ---------------------------------------------------------------------------
@@ -139,6 +163,7 @@ export function useMonitor() {
    */
   const retryHistory = useCallback(() => {
     lastAppendedId.current = null;
+    pendingReadings.current = [];
     setReadings([]);
     setHistoryReady(false); // closes the stream (subscribe effect cleanup runs)
     setLoadError(null);
@@ -156,16 +181,29 @@ export function useMonitor() {
   useEffect(() => {
     if (paused || !historyReady) return;
 
+    // Commit whatever has accumulated. One state update per flush regardless of
+    // how many readings arrived, so render cost is bounded by the timer rather
+    // than by the feed rate.
+    const flush = (): void => {
+      if (pendingReadings.current.length === 0) return;
+      const batch = pendingReadings.current;
+      pendingReadings.current = [];
+      setReadings((prev) => [...prev, ...batch]);
+    };
+    const flushTimer = setInterval(flush, READING_FLUSH_MS);
+
     const unsubscribe = dataSourceRef.current.subscribe(
       (reading) => {
         // FIX 1b: drop any id we have already appended.
         // Covers: (a) the initial fetchHistory/stream overlap on cold connect,
         // (b) pause-resume backfills via ?since= that overlap with existing state.
+        // The fence is checked here, synchronously on arrival, rather than at
+        // flush time — it must see every reading in arrival order.
         if (lastAppendedId.current !== null && reading.id <= lastAppendedId.current) {
           return;
         }
         lastAppendedId.current = reading.id;
-        setReadings((prev) => [...prev, reading]);
+        pendingReadings.current.push(reading);
       },
       (status) => setConnectionStatus(status),
       // The server sends `reset` when what we hold is no longer part of its
@@ -186,12 +224,21 @@ export function useMonitor() {
       // one, instead of being suppressed as "already active".
       () => {
         setReadings([]);
+        // Anything buffered belongs to the timeline being discarded — flushing
+        // it after the clear would resurrect a few rows of the old run.
+        pendingReadings.current = [];
         lastAppendedId.current = null;
         activeRulesRef.current = new Set();
       },
     );
 
-    return unsubscribe;
+    return () => {
+      clearInterval(flushTimer);
+      unsubscribe();
+      // Commit the tail so pausing doesn't silently drop the readings that
+      // arrived since the last flush.
+      flush();
+    };
   }, [paused, historyReady]);
 
   // ---------------------------------------------------------------------------
@@ -238,19 +285,27 @@ export function useMonitor() {
   // SPC stats
   // ---------------------------------------------------------------------------
   // Control limits from the stable baseline, Cp/Cpk from the rolling window.
+  // The window is 24 HOURS, which is 24 readings on the hourly CSV replay and
+  // 1440 on the live minute feed. Sizing it in readings would silently shrink
+  // the live window to 24 minutes and make Cpk twitch on noise.
+  const windowSize = useMemo(
+    () => ROLLING_WINDOW_H * samplesPerHour(readings),
+    [readings],
+  );
+
   const stats: ChannelStats[] = useMemo(() => {
     if (readings.length === 0) return [];
     const baseline = stableBaseline(readings);
-    const window = readings.slice(-ROLLING_WINDOW);
+    const window = readings.slice(-windowSize);
     return CHANNELS.map((cfg) => computeChannelStats(cfg, baseline, window));
-  }, [readings]);
+  }, [readings, windowSize]);
 
   // ---------------------------------------------------------------------------
   // Rule engine
   // ---------------------------------------------------------------------------
   const interpretations: Interpretation[] = useMemo(
-    () => interpret(readings.slice(-ROLLING_WINDOW)),
-    [readings],
+    () => interpret(readings.slice(-windowSize)),
+    [readings, windowSize],
   );
 
   // ---------------------------------------------------------------------------

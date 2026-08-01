@@ -78,10 +78,31 @@ layers upward (e.g. components must not import services).
 - **`derived_alert`** is the data team's single-row classifier. It does NOT
   replace `lib/interpret.ts`, which reasons over a rolling window and predicts
   ~19 h ahead. Show both; they answer different questions.
-- **The stream runs one simulated hour behind** (the pipeline needs the next row
-  to interpolate). Not a bug, not tunable from the client.
-- **Playback speed is a server setting** (`SIM_SPEED`). The pause button is a
-  local pause only — the simulator keeps running.
+- **The live feed is 1-MINUTE resolution; the CSV fallback is hourly.** The
+  simulator synthesises the 59 minutes between each pair of source hours
+  (`server/src/simulator/interpolate.ts`); minute 0 of each hour is still the
+  source row byte-for-byte. This is the single most load-bearing difference
+  between the two data sources:
+  - **Nothing may be sized in "readings".** 24 readings is 24 h on the CSV and
+    24 min live. Call `samplesPerHour()` (`lib/spc.ts`) and multiply.
+    `ROLLING_WINDOW_H` and every threshold in `interpret.ts` are in HOURS.
+  - **`slope()` is per sample, not per hour.** Multiply by `samplesPerHour`
+    before comparing against a kPa/h threshold, or the ramp rule under-reads by
+    60x and never fires. `slopePerHour()` in `interpret.ts` does this.
+  - **120 readings/second.** `useMonitor` buffers them and commits at 5 Hz; do
+    not add a per-reading `setState`.
+  - **A single-reading event lasts ~8 ms.** Rules keyed on `latest` alone will
+    miss it — most readings are never `latest` once commits are batched. This is
+    why `sensor-dropout` scans a 15-minute lookback rather than just `latest`.
+  - Prove changes against BOTH resolutions; see "Rule tuning" below.
+- **The stream runs one simulated minute behind** (the pipeline needs the next
+  row to interpolate). Not a bug, not tunable from the client.
+- **Playback speed is a server setting** (`SIM_SPEED`, a multiplier on 120
+  simulated minutes/real second). The pause button is a local pause only — the
+  simulator keeps running.
+- **The raw feed is tailed, not re-read.** `PipelineRunner.poll` tracks a byte
+  offset; re-reading the whole file per poll was quadratic over a 30,000-row
+  pass and cost ~20% of the feed rate by the end of one.
 
 ## Domain facts the code encodes (validated against the July 2026 dataset)
 
@@ -97,11 +118,27 @@ layers upward (e.g. components must not import services).
 
 ## Rule tuning
 
-All thresholds live at the top of `lib/interpret.ts` and in `config/channels.ts`.
+All thresholds live at the top of `lib/interpret.ts` and in `config/channels.ts`,
+and are expressed in HOURS and units-per-hour — never in reading counts.
 `pressure-ramp` uses slope ≤ −5 kPa/h over 8 h + level ≤ 340 kPa + 2 h
 persistence; verified to fire exactly twice on the reference dataset (the two
-real valve events, ~19 h ahead) with zero false positives. Keep it that way:
-rerun the verify script after any change.
+real valve events, ~19 h ahead) with zero false positives. Keep it that way.
+
+**Verify at both resolutions after any change to `lib/`.** The rule engine has to
+give the same answer on the hourly CSV and the 1-minute live feed, and a change
+that quietly reintroduces a reading-count assumption passes one and fails the
+other. `scripts/verify-rules.ts` takes an optional CSV path for this:
+
+```sh
+npx esbuild scripts/verify-rules.ts --bundle --platform=node \
+  --alias:@=./src --outfile=/tmp/verify.cjs
+node /tmp/verify.cjs                 # hourly — 6 sensor-dropout, 2 pressure-ramp
+node /tmp/verify.cjs /tmp/minute.csv # minute — same span COUNTS, times within ~20 min
+```
+
+Generate `/tmp/minute.csv` with `expandToMinutes` from
+`server/dist/simulator/interpolate.js`. Span counts must match exactly; start
+times drift a little because finer sampling crosses a threshold sooner.
 
 ## Conventions
 

@@ -43,6 +43,34 @@ export function readText(file: string): string {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 }
 
+/** Current size in bytes, or 0 if the file does not exist. */
+export function fileSize(file: string): number {
+  return fs.existsSync(file) ? fs.statSync(file).size : 0;
+}
+
+/**
+ * Reads the bytes in [from, to) without loading the rest of the file.
+ *
+ * This is what makes tailing an append-only file cheap. Re-reading and
+ * re-parsing the whole file on every poll is O(size) per poll and therefore
+ * O(size²) over a run — fine for 500 rows, quietly quadratic at 30,000, where it
+ * cost the feed about a fifth of its throughput by the end of a pass.
+ *
+ * The caller is responsible for line framing: a chunk boundary can land
+ * mid-line, so the tail of the returned text may be a partial row.
+ */
+export function readRange(file: string, from: number, to: number): string {
+  if (to <= from) return '';
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(to - from);
+    const read = fs.readSync(fd, buf, 0, to - from, from);
+    return buf.subarray(0, read).toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** Number of data lines (excludes the header and any trailing newline). */
 export function countDataLines(file: string): number {
   const text = readText(file);

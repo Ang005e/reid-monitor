@@ -20,6 +20,42 @@ export function stdDev(xs: number[]): number {
   return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1));
 }
 
+/**
+ * How many readings make up one hour of this feed.
+ *
+ * The dataset is hourly, but the live backend serves it at 1-minute resolution,
+ * so "the last 8 readings" and "the last 8 hours" are the same thing in one and
+ * differ by 60x in the other. Everything time-based — SPC windows, ramp slopes,
+ * persistence checks — asks this rather than assuming.
+ *
+ * Measured from the data instead of configured, so the CSV replay fallback and
+ * the live stream both work with no flag to keep in sync. The median gap is used
+ * rather than the mean because a loop boundary or a resume backfill can put one
+ * freak delta in the window, and a median ignores it.
+ *
+ * Returns 1 for anything it cannot measure, which is the historical behaviour.
+ */
+export function samplesPerHour(readings: readonly SensorReading[]): number {
+  if (readings.length < 2) return 1;
+
+  // A short tail is enough to establish cadence and keeps this O(1) on a
+  // 30,000-reading history.
+  const tail = readings.slice(-25);
+  const deltas: number[] = [];
+  for (let i = 1; i < tail.length; i += 1) {
+    const a = Date.parse(`${tail[i - 1].timestamp}Z`);
+    const b = Date.parse(`${tail[i].timestamp}Z`);
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a) deltas.push(b - a);
+  }
+  if (deltas.length === 0) return 1;
+
+  deltas.sort((x, y) => x - y);
+  const medianMs = deltas[Math.floor(deltas.length / 2)];
+  if (!Number.isFinite(medianMs) || medianMs <= 0) return 1;
+
+  return Math.max(1, Math.round(3_600_000 / medianMs));
+}
+
 /** Least-squares slope of xs per unit index (used for trend/ramp detection). */
 export function slope(xs: number[]): number {
   const n = xs.length;

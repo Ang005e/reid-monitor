@@ -92,5 +92,12 @@ export const VIBRATION_BANDS = {
   humMax: 0.46, //   above this ≈ "rattle"
 };
 
-/** Rolling window (hours) for live SPC stats & Cpk trend. */
-export const ROLLING_WINDOW = 24;
+/**
+ * Rolling window for live SPC stats & Cpk trend, in HOURS.
+ *
+ * Deliberately hours rather than a reading count: the bundled CSV replay is
+ * hourly but the live backend streams at 1-minute resolution, so 24 readings and
+ * 24 hours are the same thing in one feed and differ by 60x in the other.
+ * Convert with `samplesPerHour()` from lib/spc at the point of use.
+ */
+export const ROLLING_WINDOW_H = 24;

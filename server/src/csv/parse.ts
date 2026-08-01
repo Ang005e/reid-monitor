@@ -51,17 +51,18 @@ function columnIndex(header: string[], name: string): number {
   return i;
 }
 
-/**
- * Parses the raw sensor export (or raw-sensor-data.csv, same shape).
- *
- * `id` is the row's position in the file rather than the value of the unnamed
- * index column, so ids stay gapless even if the source index is ever rewritten.
- */
-export function parseRawCsv(text: string): RawReading[] {
-  const { header, lines } = splitCsv(text);
-  if (lines.length === 0) return [];
+/** Resolved column positions for the raw schema. Columns are found by name. */
+export type RawColumns = ReturnType<typeof rawColumns>;
 
-  const at = {
+/**
+ * Locates every raw column by header name.
+ *
+ * Split out so a caller tailing an append-only file can resolve the header once
+ * and then parse each new chunk of lines against it, instead of re-reading the
+ * whole file to rediscover the same positions.
+ */
+export function rawColumns(header: string[]) {
+  return {
     timestamp: columnIndex(header, 'timestamp'),
     power_kw: columnIndex(header, 'power_kw'),
     airflow_m3s: columnIndex(header, 'airflow_m3s'),
@@ -73,23 +74,42 @@ export function parseRawCsv(text: string): RawReading[] {
     system_status: columnIndex(header, 'system_status'),
     sensor_source: columnIndex(header, 'sensor_source'),
   };
+}
 
-  return lines.map((line, i) => {
-    const f = line.split(',');
-    const timestamp = f[at.timestamp];
-    if (timestamp === undefined) throw new Error(`Row ${i} has no timestamp`);
-    return {
-      id: i,
-      timestamp: toIsoTimestamp(timestamp),
-      power_kw: parseNullableNumber(f[at.power_kw]),
-      airflow_m3s: parseNullableNumber(f[at.airflow_m3s]),
-      water_pressure_kpa: parseNullableNumber(f[at.water_pressure_kpa]),
-      water_flow_lps: parseNullableNumber(f[at.water_flow_lps]),
-      temperature_c: parseNullableNumber(f[at.temperature_c]),
-      vibration_level: parseNullableNumber(f[at.vibration_level]),
-      sound_event: (f[at.sound_event] ?? 'normal') as SoundEvent,
-      system_status: (f[at.system_status] ?? 'stable') as SystemStatus,
-      sensor_source: f[at.sensor_source] ?? '',
-    } satisfies RawReading;
-  });
+/**
+ * Parses one raw data line.
+ *
+ * `id` is supplied by the caller rather than taken from the unnamed index
+ * column, so ids stay gapless even if the source index is ever rewritten.
+ */
+export function parseRawLine(line: string, at: RawColumns, id: number): RawReading {
+  const f = line.split(',');
+  const timestamp = f[at.timestamp];
+  if (timestamp === undefined) throw new Error(`Row ${id} has no timestamp`);
+  return {
+    id,
+    timestamp: toIsoTimestamp(timestamp),
+    power_kw: parseNullableNumber(f[at.power_kw]),
+    airflow_m3s: parseNullableNumber(f[at.airflow_m3s]),
+    water_pressure_kpa: parseNullableNumber(f[at.water_pressure_kpa]),
+    water_flow_lps: parseNullableNumber(f[at.water_flow_lps]),
+    temperature_c: parseNullableNumber(f[at.temperature_c]),
+    vibration_level: parseNullableNumber(f[at.vibration_level]),
+    sound_event: (f[at.sound_event] ?? 'normal') as SoundEvent,
+    system_status: (f[at.system_status] ?? 'stable') as SystemStatus,
+    sensor_source: f[at.sensor_source] ?? '',
+  } satisfies RawReading;
+}
+
+/**
+ * Parses the raw sensor export (or raw-sensor-data.csv, same shape) in full.
+ *
+ * Used by the batch path and by boot-time recovery. The live pipeline tails the
+ * file instead — see PipelineRunner.poll.
+ */
+export function parseRawCsv(text: string): RawReading[] {
+  const { header, lines } = splitCsv(text);
+  if (lines.length === 0) return [];
+  const at = rawColumns(header);
+  return lines.map((line, i) => parseRawLine(line, at, i));
 }

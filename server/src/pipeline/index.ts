@@ -1,6 +1,13 @@
-import { CLEANED_CSV, PIPELINE_POLL_MS, RAW_CSV } from '../config.js';
-import { appendLines, ensureHeader, readText, resetFile } from '../csv/appendOnly.js';
-import { parseRawCsv } from '../csv/parse.js';
+import { CLEANED_CSV, META_REFRESH_MS, PIPELINE_POLL_MS, RAW_CSV } from '../config.js';
+import {
+  appendLines,
+  ensureHeader,
+  fileSize,
+  readRange,
+  readText,
+  resetFile,
+} from '../csv/appendOnly.js';
+import { parseRawLine, rawColumns, type RawColumns } from '../csv/parse.js';
 import { CLEANED_HEADER, parseCleanedCsv, serializeCleaned } from '../csv/serialize.js';
 import type { ReadingStore } from '../store.js';
 import type { CleanedReading } from '../types.js';
@@ -34,8 +41,24 @@ export class PipelineRunner {
   /** Raw rows already fed into the pipeline. */
   private rawConsumed = 0;
 
+  // --- Raw-file tail cursor ---------------------------------------------------
+  // The raw feed is append-only, so each poll reads only the bytes added since
+  // the last one. See poll() and csv/appendOnly.readRange.
+
+  /** Bytes of RAW_CSV already read (including any partial trailing line). */
+  private rawBytes = 0;
+
+  /** Trailing partial line from the last chunk, awaiting its newline. */
+  private rawLeftover = '';
+
+  /** Column positions, resolved once from the header line. */
+  private rawColumns: RawColumns | null = null;
+
   /** Cleaned rows already on disk when we booted; used to avoid re-appending. */
   private alreadyPersisted = 0;
+
+  /** Wall clock of the last /meta recomputation — see refreshMeta's throttle. */
+  private lastMetaMs = 0;
 
   constructor(store: ReadingStore) {
     this.store = store;
@@ -80,19 +103,53 @@ export class PipelineRunner {
    * reaches the dashboard without waiting for the poll interval.
    */
   poll(): void {
-    const rawText = readText(RAW_CSV);
-    if (rawText.trim() === '') return;
+    const size = fileSize(RAW_CSV);
 
-    const rawRows = parseRawCsv(rawText);
-    if (rawRows.length <= this.rawConsumed) return;
+    // The file shrank, so it was truncated under us — the simulator starting a
+    // new pass. Drop our byte cursor and re-read from the top; resetForLoop has
+    // already reset everything else.
+    if (size < this.rawBytes) this.resyncRaw();
+    if (size === 0 || size === this.rawBytes) return;
+
+    // Read ONLY the new bytes. See readRange for why this is not a whole-file
+    // read: at 30,000 rows and four polls a second, re-parsing the file each
+    // time is quadratic over a pass and visibly slows the feed.
+    const text = this.rawLeftover + readRange(RAW_CSV, this.rawBytes, size);
+    this.rawBytes = size;
+
+    // A chunk boundary can land mid-line. Keep any trailing partial line back
+    // until the rest of it arrives, or it would parse as a short row.
+    const lastNewline = text.lastIndexOf('\n');
+    if (lastNewline === -1) {
+      this.rawLeftover = text;
+      return;
+    }
+    this.rawLeftover = text.slice(lastNewline + 1);
+
+    const lines = text
+      .slice(0, lastNewline)
+      .replace(/^﻿/, '')
+      .split(/\r?\n/)
+      .filter((l) => l.length > 0);
+    if (lines.length === 0) return;
+
+    // The first complete line of the file is the header.
+    let start = 0;
+    if (this.rawColumns === null) {
+      const headerLine = lines[0];
+      if (headerLine === undefined) return;
+      this.rawColumns = rawColumns(headerLine.split(','));
+      start = 1;
+    }
+    const at = this.rawColumns;
 
     const finalised: CleanedReading[] = [];
-    for (let i = this.rawConsumed; i < rawRows.length; i += 1) {
-      const row = rawRows[i];
-      if (row === undefined) continue;
-      finalised.push(...this.pipeline.push(row));
+    for (let i = start; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line === undefined) continue;
+      finalised.push(...this.pipeline.push(parseRawLine(line, at, this.rawConsumed)));
+      this.rawConsumed += 1;
     }
-    this.rawConsumed = rawRows.length;
 
     // Rows below the restore point are already on disk and already in the store;
     // re-deriving them was how we rebuilt pipeline state, not new work.
@@ -118,7 +175,7 @@ export class PipelineRunner {
 
     appendLines(CLEANED_CSV, remaining.map(serializeCleaned));
     for (const reading of remaining) this.store.push(reading);
-    this.refreshMeta();
+    this.refreshMeta(true);
   }
 
   /**
@@ -148,6 +205,9 @@ export class PipelineRunner {
 
     this.pipeline = new StreamingPipeline(continueFromId);
     this.rawConsumed = 0;
+    // The simulator truncates and re-headers the raw file immediately after
+    // this returns, so the tail cursor has to start over with it.
+    this.resyncRaw();
     // Nothing from this pass is on disk yet. Ids no longer equal row indices
     // after a loop, so this must track the id offset, not zero.
     this.alreadyPersisted = continueFromId;
@@ -156,13 +216,38 @@ export class PipelineRunner {
   }
 
   /**
+   * Rewinds the raw-file tail cursor so the next poll reads from byte 0.
+   *
+   * Used whenever the file underneath us is replaced rather than appended to:
+   * a loop truncates and re-headers it, so the old byte offset, the buffered
+   * partial line and the resolved header all belong to a file that no longer
+   * exists.
+   */
+  private resyncRaw(): void {
+    this.rawBytes = 0;
+    this.rawLeftover = '';
+    this.rawColumns = null;
+  }
+
+  /**
    * Recomputes the derived summaries served by /api/meta.
    *
-   * Cheap enough to redo wholesale on every batch at this scale, and doing so
-   * keeps the expanding-window semantics honest: the stable baseline genuinely
-   * tightens as more stable hours accumulate.
+   * Throttled, because all three are whole-history scans and history is now
+   * ~30,000 minute rows rather than 500 hourly ones: the baseline sorts every
+   * stable value per channel to take percentiles, and rows arrive in batches
+   * four times a second. Recomputing on every batch was affordable at hourly
+   * resolution and is simply wasted work at this one — /meta is polled by the
+   * dashboard every few minutes and its numbers move slowly by construction
+   * (an expanding window over stable rows).
+   *
+   * `force` bypasses the throttle for end-of-pass flushes, so the summaries a
+   * run finishes on always include its final rows.
    */
-  private refreshMeta(): void {
+  private refreshMeta(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastMetaMs < META_REFRESH_MS) return;
+    this.lastMetaMs = now;
+
     const all = this.store.since();
     this.store.setMeta({
       baseline: computeBaselineLimits(all),

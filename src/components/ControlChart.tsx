@@ -89,6 +89,17 @@ export function ControlChart({
           showSymbol: false,
           connectNulls: false,
           data,
+          // A full pass of the live feed is ~30,000 minute readings, far more
+          // than a chart this size has pixels for. LTTB picks the points that
+          // preserve the visible shape — spikes and ramps survive, which matters
+          // here because the pressure ramp IS the story — and drops the rest, so
+          // render cost tracks chart width rather than history length.
+          sampling: 'lttb',
+          // Skips per-point hit-test geometry once the series is large. The
+          // threshold sits above the hourly replay's 500 points so the CSV
+          // fallback keeps its normal interactive rendering.
+          large: true,
+          largeThreshold: 2000,
           lineStyle: { width: 1.4, color: '#5aa9e6' },
           markLine: {
             symbol: 'none',

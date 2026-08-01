@@ -1,6 +1,6 @@
 import type { ChannelKey, Interpretation, SensorReading, Severity } from '@/types';
 import { VIBRATION_BANDS } from '@/config/channels';
-import { channelValue, slope } from './spc';
+import { channelValue, samplesPerHour, slope } from './spc';
 
 /**
  * Interpretation rule engine — Cloudy's handwritten patterns, made executable.
@@ -42,15 +42,35 @@ interface RuleContext {
   /** Most recent readings, oldest → newest. At least ~24 h for full fidelity. */
   window: SensorReading[];
   latest: SensorReading;
+  /**
+   * Readings per hour in this window — 1 for the hourly CSV replay, 60 for the
+   * live minute-resolution stream. Every threshold below is expressed in HOURS
+   * and converted through this, so both feeds fire on the same physical trend
+   * rather than on the same number of samples.
+   */
+  perHour: number;
 }
 
 type Rule = (ctx: RuleContext) => Interpretation | null;
 
+/** The last `hours` of a channel, in whatever resolution the feed is running at. */
 function values(ctx: RuleContext, key: ChannelKey, hours: number): number[] {
   return ctx.window
-    .slice(-hours)
+    .slice(-Math.max(1, Math.round(hours * ctx.perHour)))
     .map((r) => channelValue(r, key))
     .filter((v): v is number => v != null);
+}
+
+/**
+ * Least-squares slope in units PER HOUR.
+ *
+ * slope() works per sample, which equals per hour only on an hourly feed. On the
+ * minute feed a −9.7 kPa/h ramp is −0.162 kPa per sample, so comparing the raw
+ * slope against a kPa/h threshold would under-read it by 60x and the ramp rule
+ * would never fire.
+ */
+function slopePerHour(ctx: RuleContext, xs: number[]): number {
+  return slope(xs) * ctx.perHour;
 }
 
 function make(
@@ -65,20 +85,25 @@ const pressureRamp: Rule = (ctx) => {
   // Persistence: the ramp must hold for 2 consecutive hours. Single-hour
   // noise runs (e.g. Jul 3 20:00 in the reference dataset) don't survive this;
   // real ramps fire continuously, so it costs only 1 h of the ~19 h window.
+  // Window and step are expressed in hours, then converted to samples — on the
+  // minute feed one "hour ago" is 60 readings back, not one.
+  const windowLen = Math.max(TREND_MIN_POINTS, Math.round(PRESSURE_WINDOW_H * ctx.perHour));
+  const oneHour = Math.max(1, ctx.perHour);
+
   const fires = (xs: number[]): { s: number; level: number } | null => {
     if (xs.length < TREND_MIN_POINTS) return null;
-    const s = slope(xs);
+    const s = slopePerHour(ctx, xs);
     const level = xs[xs.length - 1];
     return s <= PRESSURE_RAMP_KPA_PER_H && level <= PRESSURE_LEVEL_CONFIRM_KPA
       ? { s, level }
       : null;
   };
   const all = values(ctx, 'water_pressure_kpa', PRESSURE_WINDOW_H + 1);
-  const now = fires(all.slice(-PRESSURE_WINDOW_H));
-  const prev = fires(all.slice(0, -1).slice(-PRESSURE_WINDOW_H));
+  const now = fires(all.slice(-windowLen));
+  const prev = fires(all.slice(0, -oneHour).slice(-windowLen));
   if (!now || !prev) return null;
   const { s } = now;
-  const xs = all.slice(-PRESSURE_WINDOW_H);
+  const xs = all.slice(-windowLen);
 
   const severity: Severity = s <= -7 ? 'critical' : 'warning';
   const etaH = Math.max(2, Math.round((xs[xs.length - 1] - 240) / -s)); // ~240 kPa = observed failure level
@@ -103,7 +128,7 @@ const efficiencyCollapse: Rule = (ctx) => {
   if (latest >= RATIO_LOW) return null;
 
   // Distinguish from a valve event: pressure stays flat in ventilation faults.
-  const pSlope = slope(values(ctx, 'water_pressure_kpa', PRESSURE_WINDOW_H));
+  const pSlope = slopePerHour(ctx, values(ctx, 'water_pressure_kpa', PRESSURE_WINDOW_H));
   const pressureFlat = Math.abs(pSlope) < 2;
 
   return make(ctx, {
@@ -162,9 +187,46 @@ const temperatureDrop: Rule = (ctx) => {
   });
 };
 
+/**
+ * How far back the dropout rule looks, in hours.
+ *
+ * A dropout is a single reading. On the hourly feed that rounds to 1 reading —
+ * `latest` — which is exactly the historical behaviour and what keeps the
+ * regression count at 6. On the minute feed it is 15 readings, and it has to be:
+ * readings arrive 120/s and are flushed to the UI in batches, so only the last
+ * reading of each batch is ever `latest`. Looking at `latest` alone would miss
+ * roughly 23 of every 24 dropouts by luck of batch alignment — and a dropout
+ * that did land would be on screen for one frame. Fifteen minutes of memory
+ * makes it both reliably detected and readable.
+ */
+const DROPOUT_LOOKBACK_H = 0.25;
+
 /** R5 — sensor dropout notice (Entry 5, reframed honestly: gaps ≠ omens, but log them). */
 const sensorDropout: Rule = (ctx) => {
-  const r = ctx.latest;
+  const hasGap = (x: SensorReading): boolean =>
+    x.airflow_m3s_was_missing === true ||
+    x.water_pressure_kpa_was_missing === true ||
+    x.water_flow_lps_was_missing === true ||
+    x.vibration_level_was_missing === true ||
+    x.power_kw == null ||
+    x.airflow_m3s == null ||
+    x.water_pressure_kpa == null ||
+    x.water_flow_lps == null ||
+    x.temperature_c == null ||
+    x.vibration_level == null;
+
+  // Most recent reading carrying a gap, within the lookback. On the hourly feed
+  // the lookback is one reading, so this is just `latest`.
+  const lookback = Math.max(1, Math.round(DROPOUT_LOOKBACK_H * ctx.perHour));
+  const recent = ctx.window.slice(-lookback);
+  let r: SensorReading | undefined;
+  for (let i = recent.length - 1; i >= 0; i -= 1) {
+    if (hasGap(recent[i])) {
+      r = recent[i];
+      break;
+    }
+  }
+  if (r === undefined) return null;
 
   /*
    * Two orthogonal dropout signals, both required:
@@ -269,10 +331,20 @@ const RULES: Rule[] = [
   sourceChange,
 ];
 
-/** Run all rules against the recent window. Newest reading = window[window.length-1]. */
+/**
+ * Run all rules against the recent window. Newest reading = window[window.length-1].
+ *
+ * Feed cadence is measured from the window itself rather than configured, so the
+ * same thresholds hold whether readings arrive hourly (the bundled CSV replay)
+ * or every minute (the live backend).
+ */
 export function interpret(window: SensorReading[]): Interpretation[] {
   if (window.length === 0) return [];
-  const ctx: RuleContext = { window, latest: window[window.length - 1] };
+  const ctx: RuleContext = {
+    window,
+    latest: window[window.length - 1],
+    perHour: samplesPerHour(window),
+  };
   return RULES.map((rule) => rule(ctx)).filter((i): i is Interpretation => i !== null);
 }
 

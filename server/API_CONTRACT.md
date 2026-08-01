@@ -207,22 +207,44 @@ coordinate that with the backend owner.
 
 ## 5. Behaviour worth knowing
 
-**The stream runs one simulated hour behind.** The pipeline holds each row until
-its successor arrives, because gap-filling interpolates from the readings on both
-sides and the cleaned file is append-only — a row is published once and never
-rewritten. At 1× that is 500 ms. It is not a bug and not something you can tune
-away from the client.
+**The feed is 1-minute resolution, and fast.** The export is hourly; the
+simulator synthesises the 59 minutes between each pair of source hours by linear
+interpolation, so timestamps advance a minute at a time. Minute 0 of every hour
+is still the source row byte-for-byte — only the rows between hours are
+synthetic. Labels (`sound_event`, `system_status`, `sensor_source`) are held
+across the hour rather than blended, since they are categorical.
+
+Consequences you have to design for:
+
+- **120 readings per second** at 1×, and **29,941 per pass**. Do not call
+  setState (or its equivalent) per reading — buffer and commit on a timer. The
+  dashboard flushes at 5 Hz.
+- **Anything expressed in "readings" is now wrong by 60x.** A 24-reading window
+  used to be 24 hours and is now 24 minutes. Derive samples-per-hour from the
+  timestamps rather than assuming (the dashboard's `samplesPerHour()` does this,
+  which is what lets the same thresholds serve both this feed and the hourly CSV
+  fallback).
+- **A single-reading event lasts ~8 ms of wall clock.** Any rule keyed on "the
+  latest reading" will miss it, both because it is one frame and because batched
+  commits mean most readings are never the latest. The six sensor dropouts are
+  exactly this case.
+
+**The stream runs one simulated minute behind.** The pipeline holds each row
+until its successor arrives, because gap-filling interpolates from the readings
+on both sides and the cleaned file is append-only — a row is published once and
+never rewritten. At 1× that is ~8 ms. It is not a bug and not something you can
+tune away from the client.
 
 **Playback speed is a server setting** (`SIM_SPEED`, or `--speed` on the CLI).
 The dashboard's existing pause control still works as a local pause — it
 unsubscribes — but the simulator keeps running server-side, so resuming backfills
 via `?since=`. If you want a true global pause, ask for a control endpoint.
 
-**The simulator LOOPS the dataset.** It replays all 500 hourly rows
-(2026-07-01 → 2026-07-21), then clears the live history and starts again. At 1×
-the base rate is 500 ms per simulated hour — 120 simulated minutes per real
-second — so a full pass takes ~4 min 10 s. Set `SIM_LOOP=0` to stop at the end
-instead, and `SEED_ROWS` above 0 to open mid-dataset.
+**The simulator LOOPS the dataset.** It replays the whole run
+(2026-07-01 00:00 → 2026-07-21 19:00), then clears the live history and starts
+again. At 1× that is 120 simulated minutes per real second, so a full pass takes
+~4 min 10 s. Set `SIM_LOOP=0` to stop at the end instead, and `SEED_ROWS` above 0
+to open mid-dataset (in minute rows — an hour is 60).
 
 **You MUST handle the `reset` SSE event.** The server sends:
 

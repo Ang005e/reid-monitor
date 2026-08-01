@@ -6,6 +6,11 @@
  * "49.0" → 49 (dropping the decimal), corrupting raw-sensor-data.csv. The CSV
  * parser (csv/parse.ts) makes the same assumption: the raw file is byte-faithful.
  *
+ * That still holds for every source row. The feed runs at 1-minute resolution,
+ * but minute 0 of each hour IS the source line (only its leading index column is
+ * renumbered) — the synthesised rows are the 59 minutes in between. See
+ * simulator/interpolate.ts.
+ *
  * WHY RESUME CURSOR: on ephemeral filesystems (Render free tier) data/live/ may
  * be wiped between deploys. countDataLines tells us how many rows are already
  * present, so we continue from exactly that position — no duplicates, no gaps.
@@ -18,12 +23,14 @@ import { pathToFileURL } from 'node:url';
 import {
   SOURCE_CSV,
   RAW_CSV,
-  BASE_TICK_MS,
+  SIM_MINUTES_PER_SECOND,
+  SIM_TICK_MS,
   SIM_SPEED,
   SEED_ROWS,
   SIM_RESET,
   SIM_LOOP,
 } from '../config.js';
+import { expandToMinutes } from './interpolate.js';
 import {
   ensureHeader,
   appendLines,
@@ -56,6 +63,8 @@ export class Simulator {
   private readonly _speed: number;
   private readonly _seedRows: number;
   private readonly _tickMs: number;
+  /** Rows written per timer fire. Speed scales this, not the interval. */
+  private readonly _rowsPerTick: number;
   private readonly _loop: boolean;
   private _loopCount = 0;
   private _timer: ReturnType<typeof setTimeout> | null = null;
@@ -74,8 +83,19 @@ export class Simulator {
     this._totalRows = sourceLines.length;
     this._speed = speed;
     this._seedRows = seedRows;
-    this._tickMs = BASE_TICK_MS / speed;
+    // Fixed cadence, variable batch — see SIM_TICK_MS. At least one row per
+    // tick, so a very low speed slows the feed rather than stalling it.
+    this._tickMs = SIM_TICK_MS;
+    this._rowsPerTick = Math.max(
+      1,
+      Math.round((SIM_MINUTES_PER_SECOND * speed * SIM_TICK_MS) / 1000),
+    );
     this._loop = loop;
+  }
+
+  /** Rows written per timer fire at the configured speed. */
+  get rowsPerTick(): number {
+    return this._rowsPerTick;
   }
 
   /** Number of completed passes over the dataset. */
@@ -142,7 +162,7 @@ export class Simulator {
         this._cursor = seedCount;
         console.log(
           `[simulator] cold start: seeded ${seedCount}/${this._totalRows} rows` +
-            `  speed=${this._speed}x  tick=${this._tickMs}ms`,
+            `  speed=${this._speed}x  ${this._rowsPerTick} row(s) every ${this._tickMs}ms`,
         );
         this._emit(seedCount);
       }
@@ -150,7 +170,7 @@ export class Simulator {
       // Warm resume: pick up from exactly where we left off.
       console.log(
         `[simulator] resuming: cursor=${existing}/${this._totalRows}` +
-          `  speed=${this._speed}x  tick=${this._tickMs}ms` +
+          `  speed=${this._speed}x  ${this._rowsPerTick} row(s) every ${this._tickMs}ms` +
           `  remaining=${this._totalRows - existing}`,
       );
     }
@@ -207,17 +227,21 @@ export class Simulator {
       return;
     }
 
-    const line = this._sourceLines[this._cursor];
-    if (line === undefined) {
+    // Batch: take as many rows as this tick is worth, stopping at the end of the
+    // dataset. Appending them in one write keeps the file I/O to one syscall per
+    // tick regardless of speed, and the pipeline is nudged once for the batch
+    // rather than once per row.
+    const end = Math.min(this._cursor + this._rowsPerTick, this._totalRows);
+    const batch = this._sourceLines.slice(this._cursor, end);
+    if (batch.length === 0) {
       // Should be unreachable given the bounds check, but satisfies the type checker.
       console.log('[simulator] replay complete — source exhausted, stopping');
       return;
     }
 
-    // Verbatim append: the string is the raw CSV line, never re-serialised.
-    appendLines(RAW_CSV, [line]);
-    this._cursor++;
-    this._emit(1);
+    appendLines(RAW_CSV, batch);
+    this._cursor = end;
+    this._emit(batch.length);
 
     if (this._cursor >= this._totalRows) {
       if (!this._loop) {
@@ -278,11 +302,17 @@ export function startSimulator(options?: SimulatorOptions): Simulator {
   const allLines = cleanText.trim().split(/\r?\n/);
   // The first line is the header; remainder are data lines.
   const headerLine = allLines[0] ?? '';
-  const dataLines = allLines.slice(1).filter((l) => l.length > 0);
+  const hourlyLines = allLines.slice(1).filter((l) => l.length > 0);
+
+  // The export is hourly; the feed is minute-resolution. Minute 0 of each hour
+  // is still the source line byte-for-byte — only the 59 minutes between hours
+  // are synthesised. See simulator/interpolate.ts.
+  const dataLines = expandToMinutes(headerLine, hourlyLines);
 
   console.log(
     `[simulator] source: ${SOURCE_CSV}` +
-      `  rows=${dataLines.length}  speed=${speed}x  tick=${BASE_TICK_MS / speed}ms  seedRows=${seedRows}`,
+      `  hours=${hourlyLines.length} → rows=${dataLines.length} (1-minute resolution)` +
+      `  speed=${speed}x  ${SIM_MINUTES_PER_SECOND * speed} sim-min/s  seedRows=${seedRows}`,
   );
 
   if (reset) {

@@ -31,13 +31,15 @@ services:
       # leaving the rest of the page working. No trailing slash.
       - key: CORS_ORIGIN
         value: https://reid-monitor.vercel.app
-      # Multiplier on the base rate of 500 ms per simulated hour (= 120 simulated
-      # minutes per real second). At 1x the 500-row dataset takes ~4 min 10 s per
-      # pass, then loops.
+      # Multiplier on the base rate of 120 simulated minutes per real second.
+      # The feed is 1-minute resolution, so that is also 120 rows/second: the
+      # dataset's 500 hours expand to 29,941 minute rows and a pass takes
+      # ~4 min 10 s before it loops.
       - key: SIM_SPEED
         value: "1"
       # 0 = replay the WHOLE dataset live from the first row, skipping nothing.
-      # Raise it only if you want the dashboard to open mid-dataset.
+      # Raise it only if you want the dashboard to open mid-dataset. The unit is
+      # MINUTE rows, so an hour of pre-seeded history is 60.
       - key: SEED_ROWS
         value: "0"
       # Replay forever: on reaching the last row the live history is cleared and
