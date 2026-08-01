@@ -8,6 +8,8 @@ const STATUS_COLORS: Record<string, string> = {
   warning: 'rgba(240, 173, 78, 0.12)',
   critical: 'rgba(217, 83, 79, 0.16)',
   failed: 'rgba(217, 83, 79, 0.30)',
+  // Recovering: improving but not yet stable — calm green, distinct from warning.
+  recovering: 'rgba(76, 175, 125, 0.12)',
 };
 
 /** Contiguous non-stable spans → shaded markAreas. */

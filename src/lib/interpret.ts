@@ -165,15 +165,73 @@ const temperatureDrop: Rule = (ctx) => {
 /** R5 — sensor dropout notice (Entry 5, reframed honestly: gaps ≠ omens, but log them). */
 const sensorDropout: Rule = (ctx) => {
   const r = ctx.latest;
-  const missing: ChannelKey[] = (
+
+  /*
+   * Two orthogonal dropout signals, both required:
+   *
+   * Branch 1 — `*_was_missing` flags set by the backend pipeline.
+   *   The pipeline interpolates isolated gaps in exactly four channels
+   *   (airflow_m3s, water_pressure_kpa, water_flow_lps, vibration_level) and
+   *   marks each filled row with a boolean flag. On live data these flags are
+   *   the ONLY evidence a sensor dropped out — the pipeline has already
+   *   replaced the null with an estimated value before the reading reaches us.
+   *   power_kw and temperature_c are deliberately never interpolated
+   *   (see INTERPOLATED_CHANNELS in server/src/types.ts), so they have no flags.
+   *
+   * Branch 2 — literal null values.
+   *   Needed for two reasons:
+   *   (a) power_kw and temperature_c are never interpolated and still arrive as
+   *       real nulls from the live backend.
+   *   (b) CsvDataSource (the bundled CSV replay) produces real nulls for ALL
+   *       channels and never sets *_was_missing, so this branch keeps
+   *       scripts/verify-rules.ts passing against the raw CSV and preserves
+   *       the required ×6 count for regression testing.
+   *
+   * We take the UNION of both branches and deduplicate — a channel that is
+   * both flagged AND null (possible only during a multi-hour gap the pipeline
+   * cannot bridge) is reported exactly once.
+   */
+
+  // Branch 1: channels the pipeline interpolated (live backend only).
+  // Explicit field access avoids a string-template type cast and is exhaustive.
+  const interpolated: ChannelKey[] = [];
+  if (r.airflow_m3s_was_missing)        interpolated.push('airflow_m3s');
+  if (r.water_pressure_kpa_was_missing) interpolated.push('water_pressure_kpa');
+  if (r.water_flow_lps_was_missing)     interpolated.push('water_flow_lps');
+  if (r.vibration_level_was_missing)    interpolated.push('vibration_level');
+
+  // Branch 2: channels still arriving as literal null — either never-interpolated
+  // channels (power_kw, temperature_c) on the live backend, or any channel
+  // in the CSV replay path where *_was_missing flags are never set.
+  const stillNull: ChannelKey[] = (
     ['power_kw', 'airflow_m3s', 'water_pressure_kpa', 'water_flow_lps', 'temperature_c', 'vibration_level'] as const
   ).filter((k) => r[k] == null);
+
+  // Union, insertion-order deduplicated via Set.
+  const missing: ChannelKey[] = [...new Set([...interpolated, ...stillNull])];
   if (missing.length === 0) return null;
+
+  // Per-channel context so engineers can tell which path fired for each channel:
+  //   "pipeline-estimated" = the value was gap-filled; the raw reading was absent.
+  //   "null"               = no reading arrived at all (or CSV replay path).
+  //   both                 = multi-hour gap (pipeline could not fill it).
+  const interpolatedSet = new Set(interpolated);
+  const nullSet = new Set(stillNull);
+  const channelDetail = missing
+    .map((k) => {
+      if (interpolatedSet.has(k) && nullSet.has(k))
+        return `${k} (pipeline-estimated AND null — suspected multi-hour gap)`;
+      if (interpolatedSet.has(k))
+        return `${k} (pipeline-estimated: raw reading was absent, value was interpolated)`;
+      return `${k} (null: no reading arrived)`;
+    })
+    .join('; ');
+
   return make(ctx, {
     ruleId: 'sensor-dropout',
     severity: 'info',
     title: `Sensor dropout: ${missing.join(', ')}`,
-    engineerDetail: `Null reading(s) at ${r.timestamp} for ${missing.join(', ')}. The 6 dropouts in the July export all occurred in stable periods (isolated single-cell, ±4 h surroundings within 2σ) — damage from the attack, not fault precursors. Still worth a physical check.`,
+    engineerDetail: `Gap at ${r.timestamp} — ${channelDetail}. The 6 dropouts in the July export all occurred in stable periods (isolated single-cell, ±4 h surroundings within 2σ) — attack damage, not fault precursors. Pipeline-estimated values are plausible midpoints, not real readings; a null means no reading arrived at all. Still worth a physical check.`,
     communityMessage:
       'One of the damaged sensors went quiet for a moment. Based on past data this is leftover damage from the attack, not a sign of trouble — but engineers track every gap.',
     action: 'No action needed. Engineers will verify the sensor on their next round.',

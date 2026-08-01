@@ -32,9 +32,27 @@ button { font: inherit; cursor: pointer; }
 .header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
 .header-title { display: flex; flex-direction: column; gap: 2px; }
 .source-label { color: var(--text-dim); font-size: 0.78rem; display: flex; align-items: center; gap: 6px; }
-.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: pulse 2s infinite; }
-.live-dot.paused { background: var(--text-dim); animation: none; }
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  /* Base: green + pulse. Individual state classes override as needed. */
+  background: var(--ok); animation: pulse 2s infinite;
+}
+/* Connection state variants — BEM modifier so they never collide with old .paused. */
+.live-dot--live        { background: var(--ok);       animation: pulse 2s infinite; }
+.live-dot--connecting  { background: var(--accent);   animation: pulse 1.5s infinite; }
+/* reconnecting is benign: caution amber, not critical red */
+.live-dot--reconnecting { background: var(--warning); animation: pulse 1.5s infinite; }
+.live-dot--ended       { background: var(--text-dim); animation: none; }
+.live-dot--error       { background: var(--critical); animation: none; }
+/* paused: local user action — calm grey, no animation */
+.live-dot--paused      { background: var(--text-dim); animation: none; }
+/* Legacy class kept for any existing references */
+.live-dot.paused       { background: var(--text-dim); animation: none; }
+
 @keyframes pulse { 50% { opacity: 0.4; } }
+
+/* Staleness warning in the header timestamp */
+.conn-stale { color: var(--warning); }
 .header-actions { display: flex; gap: 10px; align-items: center; }
 
 .mode-toggle { display: flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
@@ -180,3 +198,26 @@ button { font: inherit; cursor: pointer; }
 .alert-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
 .alert-title { font-size: 0.83rem; font-weight: 600; }
 .alert-time { font-size: 0.72rem; color: var(--text-dim); }
+
+/* Loading state — shown on cold start before any readings arrive */
+.loading-state {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 14px; padding: 80px 24px; text-align: center;
+}
+.loading-title { font-size: 1rem; font-weight: 600; margin: 0; color: var(--text); }
+.loading-spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Error state — shown when history fetch fails */
+.error-state {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 16px; padding: 80px 24px; text-align: center;
+}
+.error-message {
+  color: var(--critical); font-size: 0.92rem; max-width: 480px; margin: 0;
+  line-height: 1.5;
+}

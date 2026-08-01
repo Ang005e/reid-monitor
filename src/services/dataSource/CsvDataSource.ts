@@ -1,4 +1,4 @@
-import type { SensorReading } from '@/types';
+import type { ConnectionStatus, SensorReading } from '@/types';
 import type { DataSource } from './DataSource';
 import { parseSensorCsv } from '@/lib/csv';
 
@@ -15,6 +15,7 @@ export class CsvDataSource implements DataSource {
   private cursor = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private listeners = new Set<(r: SensorReading) => void>();
+  private onStatus?: (s: ConnectionStatus) => void;
 
   constructor(
     private url: string = `${import.meta.env.BASE_URL}data/reid_library_sensor_data.csv`,
@@ -44,8 +45,16 @@ export class CsvDataSource implements DataSource {
     return this.rows.slice(0, this.cursor);
   }
 
-  subscribe(onReading: (reading: SensorReading) => void): () => void {
+  subscribe(
+    onReading: (reading: SensorReading) => void,
+    onStatus?: (s: ConnectionStatus) => void,
+  ): () => void {
     this.listeners.add(onReading);
+    // The replay has no network to fail, so it is "live" the moment it starts.
+    // Reporting this matters: without it the header would sit on "connecting…"
+    // forever whenever we fall back to the bundled replay.
+    this.onStatus = onStatus;
+    onStatus?.('live');
     if (!this.timer) this.startReplay();
     return () => {
       this.listeners.delete(onReading);
@@ -53,13 +62,19 @@ export class CsvDataSource implements DataSource {
         clearInterval(this.timer);
         this.timer = null;
       }
+      onStatus?.('ended');
     };
   }
 
   private startReplay() {
     this.timer = setInterval(async () => {
       await this.ensureLoaded();
-      if (this.cursor >= this.rows.length) return; // replay finished; hold last state
+      if (this.cursor >= this.rows.length) {
+        // Replay finished; hold the last state. Report it so the header stops
+        // claiming a live feed once the bundled dataset runs out.
+        this.onStatus?.('ended');
+        return;
+      }
       const next = this.rows[this.cursor++];
       this.listeners.forEach((fn) => fn(next));
     }, this.tickMs);
