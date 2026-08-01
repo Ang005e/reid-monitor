@@ -12,7 +12,12 @@ services:
     plan: free
     # The backend is self-contained in server/ and never imports the frontend.
     rootDir: server
-    buildCommand: npm install && npm run build
+    # --include=dev is REQUIRED. NODE_ENV=production is set below (the server
+    # refuses a wildcard CORS origin without it), and npm honours NODE_ENV by
+    # skipping devDependencies. TypeScript is a devDependency, so a plain
+    # `npm install` here installs nothing and `npm run build` dies with
+    # "tsc: not found". `npm ci` would drop devDeps for the same reason.
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     # Render polls this to decide the service is up. It is a plain synchronous
     # handler that cannot throw, so it answers even while the simulator seeds.
