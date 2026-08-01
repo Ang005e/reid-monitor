@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+
+# Generated at runtime by the simulator + pipeline.
+# These are append-only history on a live host, but they are reproducible
+# from data/source/, so they are never committed. See README ("Persistence").
+data/live/
