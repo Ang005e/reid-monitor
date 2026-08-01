@@ -2,6 +2,7 @@ import { Header } from '@/components/Header';
 import { EngineerView } from '@/components/EngineerView';
 import { CommunityView } from '@/components/CommunityView';
 import { AlertCenter } from '@/components/AlertCenter';
+import { ChatPanel } from '@/components/ChatPanel';
 import { LoginPage } from '@/components/LoginPage';
 import { useMonitor } from '@/state/useMonitor';
 import { useViewMode, ViewModeProvider } from '@/state/ViewModeContext';
@@ -130,6 +131,16 @@ function Dashboard({
         onSignOut={onSignOut}
       />
       {mainContent}
+
+      {/*
+        Deliberately OUTSIDE mainContent. The chat is a floating button that must
+        stay reachable in both view modes AND while the dashboard is still
+        loading or has failed to reach the backend — those are exactly the
+        moments someone wants to ask what is going on. Rendering it inside the
+        views coupled it to a successful history fetch, so a backend problem
+        made the chat vanish along with the charts.
+      */}
+      <ChatPanel monitor={monitor} />
     </div>
   );
 }

@@ -3,7 +3,6 @@ import { CHANNELS, SYSTEM_LABELS } from '@/config/channels';
 import { channelValue, cpkBand } from '@/lib/spc';
 import { StatusBanner } from './StatusBanner';
 import { InterpretationCard } from './InterpretationCard';
-import { ChatPanel } from './ChatPanel';
 
 const SYSTEM_ORDER = ['water', 'ventilation', 'power', 'environment'] as const;
 
@@ -83,8 +82,6 @@ export function CommunityView({ monitor }: { monitor: MonitorState }) {
           ))
         )}
       </section>
-
-      <ChatPanel monitor={monitor} />
     </div>
   );
 }
