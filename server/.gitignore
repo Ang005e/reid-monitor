@@ -5,4 +5,9 @@ dist
 # Generated at runtime by the simulator + pipeline.
 # These are append-only history on a live host, but they are reproducible
 # from data/source/, so they are never committed. See README ("Persistence").
-data/live/
+#
+# Ignore EVERY generated data dir, not just the default one — DATA_DIR can point
+# anywhere (test runs, a mounted disk) and those artifacts must never be
+# committed either. data/source/ is the committed read-only input.
+data/*
+!data/source/

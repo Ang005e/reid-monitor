@@ -24,10 +24,17 @@ export interface DataSource {
    * `onStatus` is optional so existing implementations (CsvDataSource) stay
    * compatible — they simply never call it. For HttpDataSource it tracks the
    * EventSource connection lifecycle and feeds the header status badge.
+   *
+   * `onReset` fires when the source discards its history and starts the series
+   * again — the backend simulator replaying the dataset on a loop. Consumers
+   * must clear the readings they hold, because the next reading restarts at the
+   * dataset's first timestamp. Reading ids keep increasing across a reset, so
+   * cursors and duplicate guards remain valid.
    */
   subscribe(
     onReading: (r: SensorReading) => void,
     onStatus?: (s: ConnectionStatus) => void,
+    onReset?: () => void,
   ): () => void;
 
   /**

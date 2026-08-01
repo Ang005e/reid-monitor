@@ -168,6 +168,22 @@ export function useMonitor() {
         setReadings((prev) => [...prev, reading]);
       },
       (status) => setConnectionStatus(status),
+      // The backend replays the dataset on a loop. On wrap it clears its
+      // history and the next reading carries the dataset's FIRST timestamp
+      // again, so we drop everything we hold — otherwise the charts would keep
+      // the finished run and their time axis would jump backwards mid-series.
+      //
+      // lastAppendedId is deliberately left alone: ids keep counting up across
+      // a loop, so the duplicate guard stays correct. Clearing it would be
+      // harmless here but wrong if a backfill arrived out of order.
+      //
+      // Rule state is cleared too, so an alert that was firing at the end of
+      // the previous pass re-fires (and re-notifies) when it recurs in the new
+      // one, instead of being suppressed as "already active".
+      () => {
+        setReadings([]);
+        activeRulesRef.current = new Set();
+      },
     );
 
     return unsubscribe;

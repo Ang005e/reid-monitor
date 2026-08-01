@@ -72,6 +72,7 @@ export class HttpDataSource implements DataSource {
   subscribe(
     onReading: (r: SensorReading) => void,
     onStatus?: (s: ConnectionStatus) => void,
+    onReset?: () => void,
   ): () => void {
     // Build the resume URL. If we have a cursor, pass it; otherwise let the
     // server replay everything (shouldn't happen in normal flow, but safe).
@@ -106,6 +107,17 @@ export class HttpDataSource implements DataSource {
       }
       onReading(reading);
     };
+
+    // The simulator replays the dataset on a loop. When it wraps, the server
+    // clears its history and the next reading carries the FIRST timestamp
+    // again. Without this the chart would keep the old run and its time axis
+    // would jump backwards mid-series.
+    //
+    // Note we deliberately do NOT reset `lastId`: ids keep counting up across
+    // loops precisely so the resume cursor and the duplicate guard stay valid.
+    source.addEventListener('reset', () => {
+      onReset?.();
+    });
 
     source.onerror = () => {
       consecutiveErrors++;

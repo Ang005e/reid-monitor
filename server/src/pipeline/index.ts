@@ -1,5 +1,5 @@
 import { CLEANED_CSV, PIPELINE_POLL_MS, RAW_CSV } from '../config.js';
-import { appendLines, ensureHeader, readText } from '../csv/appendOnly.js';
+import { appendLines, ensureHeader, readText, resetFile } from '../csv/appendOnly.js';
 import { parseRawCsv } from '../csv/parse.js';
 import { CLEANED_HEADER, parseCleanedCsv, serializeCleaned } from '../csv/serialize.js';
 import type { ReadingStore } from '../store.js';
@@ -119,6 +119,40 @@ export class PipelineRunner {
     appendLines(CLEANED_CSV, remaining.map(serializeCleaned));
     for (const reading of remaining) this.store.push(reading);
     this.refreshMeta();
+  }
+
+  /**
+   * Handles the simulator looping back to the first row of the dataset.
+   *
+   * Called BEFORE the raw file is truncated, so the order here matters:
+   *
+   *  1. flush() — publish the row the pipeline is still holding for lookahead,
+   *     so the run ends on the dataset's last reading instead of one short.
+   *  2. Clear the cleaned file and the store, so the dashboard starts the new
+   *     pass with an empty chart rather than a timeline that jumps backwards.
+   *  3. Start a fresh pipeline whose ids CONTINUE from the current cursor.
+   *
+   * Step 3 is the subtle one. Ids are the SSE resume cursor and the dashboard
+   * discards any id it has already seen, so restarting them at 0 would make the
+   * entire second pass look like duplicate data. Timestamps repeat across loops;
+   * ids never do.
+   */
+  resetForLoop(): void {
+    this.flush();
+
+    const continueFromId = this.pipeline.cursor;
+
+    resetFile(CLEANED_CSV);
+    ensureHeader(CLEANED_CSV, CLEANED_HEADER);
+    this.store.reset();
+
+    this.pipeline = new StreamingPipeline(continueFromId);
+    this.rawConsumed = 0;
+    // Nothing from this pass is on disk yet. Ids no longer equal row indices
+    // after a loop, so this must track the id offset, not zero.
+    this.alreadyPersisted = continueFromId;
+
+    console.log(`[pipeline] history cleared for new pass — ids continue from ${continueFromId}`);
   }
 
   /**

@@ -31,14 +31,19 @@ services:
       # leaving the rest of the page working. No trailing slash.
       - key: CORS_ORIGIN
         value: https://reid-monitor.vercel.app
-      # Playback speed: 1 = one simulated hour per 1.5 s. The dataset is 500
-      # hourly rows, so 1x runs ~12.5 minutes before it holds its final state.
+      # Multiplier on the base rate of 500 ms per simulated hour (= 120 simulated
+      # minutes per real second). At 1x the 500-row dataset takes ~4 min 10 s per
+      # pass, then loops.
       - key: SIM_SPEED
         value: "1"
-      # Rows written instantly on a cold boot so the dashboard opens with
-      # history rather than an empty chart.
+      # 0 = replay the WHOLE dataset live from the first row, skipping nothing.
+      # Raise it only if you want the dashboard to open mid-dataset.
       - key: SEED_ROWS
-        value: "275"
+        value: "0"
+      # Replay forever: on reaching the last row the live history is cleared and
+      # the run restarts from the beginning. Set to 0 to stop at the end.
+      - key: SIM_LOOP
+        value: "1"
     # NOTE: no persistent disk on the free plan. data/live/ is rebuilt
     # deterministically from data/source/ on every boot, so history resets on
     # redeploy and when the free instance wakes from sleep. That is acceptable

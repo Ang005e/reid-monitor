@@ -210,7 +210,7 @@ coordinate that with the backend owner.
 **The stream runs one simulated hour behind.** The pipeline holds each row until
 its successor arrives, because gap-filling interpolates from the readings on both
 sides and the cleaned file is append-only — a row is published once and never
-rewritten. At 1× that is 1.5 s. It is not a bug and not something you can tune
+rewritten. At 1× that is 500 ms. It is not a bug and not something you can tune
 away from the client.
 
 **Playback speed is a server setting** (`SIM_SPEED`, or `--speed` on the CLI).
@@ -218,9 +218,29 @@ The dashboard's existing pause control still works as a local pause — it
 unsubscribes — but the simulator keeps running server-side, so resuming backfills
 via `?since=`. If you want a true global pause, ask for a control endpoint.
 
-**History is capped by the dataset.** The simulator replays 500 hourly rows
-(2026-07-01 → 2026-07-21) and then stops cleanly, holding the final state. It
-does not loop.
+**The simulator LOOPS the dataset.** It replays all 500 hourly rows
+(2026-07-01 → 2026-07-21), then clears the live history and starts again. At 1×
+the base rate is 500 ms per simulated hour — 120 simulated minutes per real
+second — so a full pass takes ~4 min 10 s. Set `SIM_LOOP=0` to stop at the end
+instead, and `SEED_ROWS` above 0 to open mid-dataset.
+
+**You MUST handle the `reset` SSE event.** On each loop the server sends:
+
+```
+event: reset
+data: {}
+```
+
+immediately before the next reading, which carries the dataset's FIRST timestamp
+again. Clear every reading you hold when you see it, or your chart keeps the
+finished run and its time axis jumps backwards mid-series. `EventSource` does not
+route named events to `onmessage` — use `addEventListener('reset', …)`.
+
+**Reading ids never reset.** They keep counting up across loops (…498, 499, 500
+with the timestamp back at 2026-07-01). This is deliberate: ids are the `?since=`
+resume cursor and the dashboard drops ids it has already seen, so restarting them
+at 0 would make an entire pass look like duplicate data and be discarded silently.
+Timestamps repeat; ids do not.
 
 **Cold start on Render's free tier takes ~30 s.** First request after an idle
 period will hang while the service wakes. Worth a loading state.

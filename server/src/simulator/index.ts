@@ -22,6 +22,7 @@ import {
   SIM_SPEED,
   SEED_ROWS,
   SIM_RESET,
+  SIM_LOOP,
 } from '../config.js';
 import {
   ensureHeader,
@@ -55,14 +56,18 @@ export class Simulator {
   private readonly _speed: number;
   private readonly _seedRows: number;
   private readonly _tickMs: number;
+  private readonly _loop: boolean;
+  private _loopCount = 0;
   private _timer: ReturnType<typeof setTimeout> | null = null;
   private readonly _listeners = new Set<TickListener>();
+  private readonly _loopListeners = new Set<() => void>();
 
   constructor(
     sourceHeader: string,
     sourceLines: readonly string[],
     speed: number,
     seedRows: number,
+    loop: boolean = SIM_LOOP,
   ) {
     this._sourceHeader = sourceHeader;
     this._sourceLines = sourceLines;
@@ -70,6 +75,26 @@ export class Simulator {
     this._speed = speed;
     this._seedRows = seedRows;
     this._tickMs = BASE_TICK_MS / speed;
+    this._loop = loop;
+  }
+
+  /** Number of completed passes over the dataset. */
+  get loopCount(): number {
+    return this._loopCount;
+  }
+
+  /**
+   * Subscribe to loop events, fired when the replay reaches the last row and is
+   * about to restart. Listeners run BEFORE the raw file is truncated, so this is
+   * where the pipeline flushes and history is cleared.
+   */
+  onLoop(listener: () => void): () => void {
+    this._loopListeners.add(listener);
+    return () => this._loopListeners.delete(listener);
+  }
+
+  private _emitLoop(): void {
+    for (const listener of [...this._loopListeners]) listener();
   }
 
   /** Rows emitted so far (seed batch + individual ticks). */
@@ -131,8 +156,19 @@ export class Simulator {
     }
 
     if (this._cursor >= this._totalRows) {
-      console.log('[simulator] source exhausted — all rows already emitted, nothing to tick');
-      return;
+      if (!this._loop) {
+        console.log('[simulator] source exhausted — all rows already emitted, nothing to tick');
+        return;
+      }
+      // Resumed onto an already-complete raw file (e.g. a restart with a
+      // persistent disk). Start the next pass rather than sitting idle.
+      console.log('[simulator] resumed onto a completed run — looping');
+      this._emitLoop();
+      // resetFile truncates the whole file, header included — the next append
+      // would otherwise produce a headerless CSV the parser rejects.
+      resetFile(RAW_CSV);
+      ensureHeader(RAW_CSV, this._sourceHeader);
+      this._cursor = 0;
     }
 
     this._scheduleTick();
@@ -184,8 +220,30 @@ export class Simulator {
     this._emit(1);
 
     if (this._cursor >= this._totalRows) {
-      console.log('[simulator] replay complete — all source rows emitted, stopping');
-      return;
+      if (!this._loop) {
+        console.log('[simulator] replay complete — all source rows emitted, stopping');
+        return;
+      }
+
+      // Loop: hand control to the listener so it can flush the pipeline's held
+      // row and clear the published history BEFORE we start writing row 0 again.
+      // Order is load-bearing — if the raw file were truncated while the
+      // pipeline still had rows pending, the last reading of the run would be
+      // lost and the pipeline's row counter would disagree with the file.
+      this._loopCount += 1;
+      console.log(
+        `[simulator] replay complete — looping (pass ${this._loopCount + 1}), clearing live history`,
+      );
+      this._emitLoop();
+
+      // resetFile is normally forbidden (this feed is append-only), but a loop
+      // is precisely the case where starting a new run from an empty file is
+      // the intent rather than data loss.
+      // resetFile truncates the whole file, header included — the next append
+      // would otherwise produce a headerless CSV the parser rejects.
+      resetFile(RAW_CSV);
+      ensureHeader(RAW_CSV, this._sourceHeader);
+      this._cursor = 0;
     }
 
     this._scheduleTick();

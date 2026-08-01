@@ -56,6 +56,14 @@ export function attachSseClient(
   // synchronous code runs, so the buffer is always empty in practice. We keep
   // it as an explicit, tested invariant rather than an invisible assumption.
 
+  // The simulator loops the dataset. When it does, the server clears its
+  // history and the next reading carries the FIRST timestamp again (ids keep
+  // counting up, so they never collide). Clients are told explicitly rather
+  // than left to infer it from a timestamp going backwards.
+  const unsubscribeReset = store.subscribeReset(() => {
+    res.write('event: reset\ndata: {}\n\n');
+  });
+
   const liveBuffer: CleanedReading[] = [];
   let streaming = false;
 
@@ -105,6 +113,7 @@ export function attachSseClient(
   function cleanup(): void {
     clearInterval(heartbeat);
     unsubscribe();
+    unsubscribeReset();
   }
 
   res.on('close', cleanup);

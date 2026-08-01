@@ -13,6 +13,7 @@ import type { BaselineLimits, CleanedReading, EpisodeSummary, RulePerformance } 
 export class ReadingStore {
   private readings: CleanedReading[] = [];
   private listeners = new Set<(reading: CleanedReading) => void>();
+  private resetListeners = new Set<() => void>();
 
   /** Derived summaries, recomputed by the pipeline as rows land. */
   private meta: {
@@ -61,6 +62,34 @@ export class ReadingStore {
   subscribe(listener: (reading: CleanedReading) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Drops all history and tells every live subscriber to do the same.
+   *
+   * Used when the simulator loops back to the start of the dataset: the new run
+   * begins at the dataset's first timestamp, so keeping the old rows would leave
+   * the dashboard's time axis jumping backwards mid-series.
+   *
+   * Reading ids are NOT reset — the pipeline carries on counting up. See
+   * SIM_LOOP in config.ts for why that matters.
+   */
+  reset(): void {
+    this.readings = [];
+    this.meta = { baseline: {}, episodes: [], performance: null };
+    for (const listener of this.resetListeners) {
+      try {
+        listener();
+      } catch {
+        // As with push(): one broken subscriber must not stop the rest.
+      }
+    }
+  }
+
+  /** Subscribe to history-cleared events. Returns an unsubscribe function. */
+  subscribeReset(listener: () => void): () => void {
+    this.resetListeners.add(listener);
+    return () => this.resetListeners.delete(listener);
   }
 
   get subscriberCount(): number {

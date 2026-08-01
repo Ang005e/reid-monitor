@@ -28,6 +28,10 @@ function main(): void {
   // interval, so the dashboard sees a new reading promptly at high speeds.
   simulator.onTick(() => pipeline.poll());
 
+  // Dataset exhausted: flush the held row, wipe the published history, and let
+  // the next pass begin. Fires before the raw file is truncated.
+  simulator.onLoop(() => pipeline.resetForLoop());
+
   startApiServer(store);
 
   console.log(

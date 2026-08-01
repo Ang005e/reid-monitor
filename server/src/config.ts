@@ -121,8 +121,15 @@ export const PIPELINE_POLL_MS = 250;
 // Simulator
 // ---------------------------------------------------------------------------
 
-/** Real milliseconds per simulated hour at 1x. Matches the old frontend replay. */
-export const BASE_TICK_MS = 1500;
+/**
+ * Real milliseconds per simulated hour at 1x.
+ *
+ * 500 ms = 2 simulated hours per real second = 120 simulated minutes/second.
+ * The dataset is 500 hourly rows, so one full pass takes ~4 min 10 s before it
+ * loops (see SIM_LOOP). Was 1500 ms, which matched the old frontend replay but
+ * took 12.5 min to get through the dataset once.
+ */
+export const BASE_TICK_MS = 500;
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -136,10 +143,30 @@ function envInt(name: string, fallback: number): number {
 
 export const SIM_SPEED = envInt('SIM_SPEED', 1);
 
-/** Rows written instantly on a cold boot so the dashboard opens with history. */
-export const SEED_ROWS = envInt('SEED_ROWS', 275);
+/**
+ * Rows written instantly on a cold boot so the dashboard opens with history.
+ *
+ * Defaults to 0: the simulator replays the WHOLE dataset live, from the first
+ * row, so nothing is skipped and every incident plays out on screen. Set it
+ * above zero only if you want the dashboard to open mid-dataset.
+ */
+export const SEED_ROWS = envInt('SEED_ROWS', 0);
 
 export const SIM_RESET = process.env.SIM_RESET === '1';
+
+/**
+ * Replay the dataset forever instead of stopping at the last row.
+ *
+ * On each loop the live history is wiped and the replay restarts from the first
+ * row, so the dashboard shows a fresh run rather than an ever-growing timeline
+ * with a discontinuity in it.
+ *
+ * Reading ids deliberately keep counting UP across loops — they are never reset
+ * to 0. They are the SSE resume cursor (`?since=`), and the dashboard also drops
+ * any reading whose id it has already seen. Restarting ids would make every row
+ * after the first loop look like a duplicate and be silently discarded.
+ */
+export const SIM_LOOP = (process.env.SIM_LOOP ?? '1') !== '0';
 
 // ---------------------------------------------------------------------------
 // API
