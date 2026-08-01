@@ -1,8 +1,8 @@
 metric,value
-True positives,117.0
+True positives,107.0
 False positives,0.0
-False negatives,15.0
+False negatives,25.0
 True negatives,368.0
 Precision,1.0
-Recall,0.8863636363636364
-Accuracy,0.97
+Recall,0.8106060606060606
+Accuracy,0.95
