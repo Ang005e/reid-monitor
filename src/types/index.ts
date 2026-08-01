@@ -91,3 +91,29 @@ export interface AppAlert extends Interpretation {
 }
 
 export type ViewMode = 'engineer' | 'community';
+
+/**
+ * Who is looking at the dashboard. Maps 1:1 onto ViewMode: facilities staff
+ * ('engineer') may switch between both views, the public ('community') may not.
+ */
+export type UserRole = 'engineer' | 'community';
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: UserRole;
+}
+
+/** A signed-in session. `token` is opaque to the UI — it is whatever the backend issues. */
+export interface AuthSession {
+  user: AuthUser;
+  token: string;
+  /** ISO-8601. The UI treats an expired session as signed out. */
+  expiresAt: string;
+}
+
+export interface Credentials {
+  username: string;
+  password: string;
+}
